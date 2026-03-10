@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from langchain.tools import tool
 from langchain.tools import ToolRuntime
-from src.utils.coze_compat import new_context
+from coze_coding_utils.runtime_ctx.context import new_context
 
 DIALOGUES_DIR = "assets/dialogues"
 
