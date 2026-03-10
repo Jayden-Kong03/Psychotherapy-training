@@ -24,7 +24,7 @@ from langgraph.graph import MessagesState
 from langgraph.graph.message import add_messages
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage
 from src.utils.coze_compat import default_headers, new_context
-from src.storage.memory.memory_saver import get_memory_saver
+from src.storage.memory.memory_saver_simple import get_memory_saver
 
 # 工具导入
 from src.tools.dialogue_record import get_dialogue_history_text
