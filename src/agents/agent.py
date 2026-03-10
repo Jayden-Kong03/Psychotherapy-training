@@ -1,12 +1,22 @@
 """
-心理咨询模拟训练系统
+心理咨询模拟训练系统（动力学取向）
 包含两个智能体：
 1. 模拟病人智能体：模拟具有心理症状的来访者，具备情绪逻辑
 2. 个案督导智能体：分析咨询过程，提供专业反馈
+
+新功能：
+- 中国国情来访者档案（抑郁、焦虑、PTSD、双相、强迫症）
+- 会话恢复功能（继续之前的来访者）
+- 50分钟真实时间模拟
+- 结束场景模拟（准点、拖延、提前、突然离开）
+- 根据咨询师回应类型计算情绪变化
+- 数据库存储（Supabase）
 """
 import os
 import json
 import random
+import time
+from datetime import datetime
 from typing import Annotated
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
@@ -15,17 +25,22 @@ from langgraph.graph.message import add_messages
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage
 from coze_coding_utils.runtime_ctx.context import default_headers, new_context
 from storage.memory.memory_saver import get_memory_saver
-from tools.dialogue_record import (
-    create_dialogue_session,
-    add_dialogue_message,
-    get_dialogue_session,
-    get_dialogue_history_text,
-    end_dialogue_session
-)
+
+# 工具导入
+from tools.dialogue_record import get_dialogue_history_text
 from tools.academic_search import (
     search_academic_literature,
     search_classic_theories,
     search_journal_articles
+)
+from tools.consultation_db import (
+    create_new_visitor,
+    get_active_visitor,
+    create_consultation_session,
+    add_dialogue_message_db,
+    end_consultation_session,
+    get_session_history,
+    CHINA_PATIENT_PROFILES
 )
 
 # 模型配置路径
@@ -40,73 +55,6 @@ def _windowed_messages(old, new):
 
 class AgentState(MessagesState):
     messages: Annotated[list[AnyMessage], _windowed_messages]
-
-# 常见心理症状模板（动力学/客体关系取向）
-PATIENT_PROFILES = {
-    "抑郁": """姓名：李明，年龄：32岁
-动力学概念化：
-- 核心冲突：对丧失的内疚与愤怒的内化，形成严厉的超我
-- 防御机制：内摄、转向自身、情感隔离
-- 客体关系：内化的批评性客体占主导，缺乏好客体的内在表征
-- 发展创伤：早年情感需求未被满足，形成自卑与无价值感
-
-症状表现：重度抑郁，持续低落情绪，兴趣丧失
-背景：工作压力大，近期遭遇失业，感到人生无意义
-行为特征：说话缓慢，语气低沉，经常叹气，对事情缺乏兴趣
-移情倾向：可能将咨询师理想化或贬低，期待被拯救或担心被拒绝
-咨询目标：重构内在客体关系，降低超我严厉程度
-""",
-    "焦虑": """姓名：张华，年龄：28岁
-动力学概念化：
-- 核心冲突：对分离的恐惧与自主性的冲突
-- 防御机制：理智化、控制、行动化
-- 客体关系：焦虑型依恋模式，寻求确认但又不信任客体
-- 发展创伤：早年依恋关系不稳定，形成不安全依恋
-
-症状表现：广泛性焦虑症，持续担忧
-背景：对未来充满不确定性，担心工作和人际关系
-行为特征：语速快，坐立不安，反复询问相同问题
-移情倾向：可能表现出对咨询师的依赖和阻抗并存
-咨询目标：建立安全依恋，识别和修正内化客体关系模式
-""",
-    "创伤": """姓名：王芳，年龄：35岁
-动力学概念化：
-- 核心冲突：创伤性记忆的整合与解离
-- 防御机制：解离、情感麻木、闪回
-- 客体关系：创伤后内在客体的破碎，难以建立信任
-- 发展创伤：半年前遭遇车祸，触发早年被忽视的记忆
-
-症状表现：创伤后应激障碍（PTSD）
-背景：遭遇车祸，对驾驶有强烈恐惧
-行为特征：回避相关话题，情绪容易激动，可能出现闪回
-移情倾向：可能将创伤的恐惧投射到咨询师身上，难以建立信任
-咨询目标：整合创伤记忆，重建安全依恋和内在客体
-""",
-    "人格障碍": """姓名：赵强，年龄：40岁
-动力学概念化：
-- 核心冲突：对分离的极端恐惧与融合的渴望
-- 防御机制：分裂、投射认同、贬低、理想化
-- 客体关系：全好/全坏的分裂客体关系，缺乏整合
-- 发展创伤：早年情感忽视或虐待，缺乏稳定的客体关系
-
-症状表现：边缘型人格障碍倾向
-背景：人际关系不稳定，情绪波动剧烈
-行为特征：情绪极端化，对咨询师有理想化或贬低倾向，可能表现出攻击性
-移情倾向：强烈的移情-反移情动态，可能测试咨询师的底线
-咨询目标：修通分裂机制，整合客体关系，建立稳定的治疗联盟
-"""
-}
-
-# 情绪状态列表
-EMOTION_STATES = [
-    "平静", "焦虑", "愤怒", "悲伤", "恐惧", "烦躁",
-    "内疚", "羞愧", "绝望", "兴奋", "抗拒", "沉默"
-]
-
-def get_random_patient_profile() -> tuple[str, str]:
-    """随机选择一个病人档案"""
-    disorder = random.choice(list(PATIENT_PROFILES.keys()))
-    return disorder, PATIENT_PROFILES[disorder]
 
 def _get_text_content(content):
     """安全提取文本内容"""
@@ -153,11 +101,12 @@ def build_agent(ctx=None):
         model=llm,
         system_prompt=cfg.get("sp"),
         tools=[
-            create_dialogue_session,
-            add_dialogue_message,
-            get_dialogue_session,
-            get_dialogue_history_text,
-            end_dialogue_session,
+            create_new_visitor,
+            get_active_visitor,
+            create_consultation_session,
+            add_dialogue_message_db,
+            end_consultation_session,
+            get_session_history,
             search_academic_literature,
             search_classic_theories,
             search_journal_articles
@@ -168,19 +117,172 @@ def build_agent(ctx=None):
     
     return agent
 
-# 便捷运行函数
+def _analyze_counselor_response_type(message: str) -> str:
+    """
+    分析咨询师回应类型
+    
+    Args:
+        message: 咨询师的消息
+    
+    Returns:
+        回应类型：empathy/challenge/support/question/other
+    """
+    empathy_keywords = ["理解", "感受到", "体会到", "听出", "感觉到", "能理解", "共情", "心疼", "难过", "遗憾"]
+    challenge_keywords = ["为什么", "怎么会", "是不是", "难道", "怎么可能", "你真的认为", "试试看", "挑战"]
+    support_keywords = ["支持", "陪伴", "在一起", "不会离开", "一直在这里", "我会帮助", "可以依靠"]
+    question_keywords = ["?", "？", "怎么样", "如何", "什么", "什么时候", "哪里", "谁"]
+    
+    message_lower = message.lower()
+    
+    for keyword in empathy_keywords:
+        if keyword in message:
+            return "empathy"
+    
+    for keyword in challenge_keywords:
+        if keyword in message:
+            return "challenge"
+    
+    for keyword in support_keywords:
+        if keyword in message:
+            return "support"
+    
+    for keyword in question_keywords:
+        if keyword in message:
+            return "question"
+    
+    return "other"
+
+def _calculate_emotion_change(
+    current_emotion: str,
+    disorder_type: str,
+    counselor_response_type: str,
+    profile_data: dict
+) -> str:
+    """
+    根据咨询师回应类型计算情绪变化
+    
+    Args:
+        current_emotion: 当前情绪
+        disorder_type: 症状类型
+        counselor_response_type: 咨询师回应类型
+        profile_data: 病人档案数据
+    
+    Returns:
+        新的情绪状态
+    """
+    response_map = profile_data.get('counselor_response_map', {})
+    possible_changes = response_map.get(counselor_response_type, ["无明显变化"])
+    
+    emotional_states = profile_data.get('emotional_states', [])
+    
+    # 根据症状类型和回应类型决定情绪变化
+    if disorder_type == "抑郁":
+        if counselor_response_type == "empathy":
+            # 抑郁患者对共情可能产生放松或流泪
+            return random.choice(["低落", "感动", "悲伤", "稍微放松"])
+        elif counselor_response_type == "challenge":
+            # 抑郁患者对挑战可能更加自我批评
+            return random.choice(["自责", "低落", "焦虑", "沉默"])
+        elif counselor_response_type == "support":
+            # 抑郁患者对支持可能短暂缓解
+            return random.choice(["稍微缓解", "感激", "仍焦虑"])
+    elif disorder_type == "焦虑":
+        if counselor_response_type == "empathy":
+            return random.choice(["稍微放松", "但仍不确定", "感激"])
+        elif counselor_response_type == "challenge":
+            return random.choice(["焦虑加剧", "防御性加强", "恐慌"])
+    elif disorder_type == "PTSD":
+        if counselor_response_type == "empathy":
+            # PTSD患者可能被触发闪回
+            return random.choice(["恐惧", "闪回", "愤怒", "麻木"])
+        elif counselor_response_type == "challenge":
+            return random.choice(["强烈防御", "愤怒", "拒绝讨论"])
+    elif disorder_type == "双相情感障碍":
+        if counselor_response_type == "empathy":
+            # 根据当前阶段（轻躁狂或抑郁）反应不同
+            return random.choice(["兴奋", "愤怒", "低落", "感激"])
+    elif disorder_type == "强迫症":
+        if counselor_response_type == "empathy":
+            return random.choice(["被理解", "很快又焦虑", "稍微放松"])
+        elif counselor_response_type == "challenge":
+            return random.choice(["焦虑加剧", "防御性加强", "困惑"])
+    
+    # 默认返回一个随机情绪状态
+    return random.choice(emotional_states) if emotional_states else current_emotion
+
+def _simulate_departure_scene(disorder_type: str, session_duration: int) -> dict:
+    """
+    模拟来访者离开场景
+    
+    Args:
+        disorder_type: 症状类型
+        session_duration: 实际咨询时长（分钟）
+    
+    Returns:
+        离开场景信息
+    """
+    departure_scenes = {
+        "抑郁": [
+            {"type": "ontime", "description": "（准时站起身，轻轻点点头）好的，时间到了，那我先走了。谢谢老师。", "probability": 0.5},
+            {"type": "delay", "description": "（收拾东西很慢，沉默了很久）老师……其实……（又沉默了几秒）算了，下次再说吧。", "probability": 0.3},
+            {"type": "early", "description": "（突然站起来，低着头）对不起，我头有点晕，今天先到这里可以吗？", "probability": 0.2}
+        ],
+        "焦虑": [
+            {"type": "ontime", "description": "（看表）哦，已经到了吗？好的，那老师下周见。谢谢！", "probability": 0.4},
+            {"type": "delay", "description": "（反复确认）老师，还有几分钟对吗？我想再多说一件事……", "probability": 0.4},
+            {"type": "early", "description": "（突然站起来）对不起，我想上洗手间……下次再来。", "probability": 0.2}
+        ],
+        "PTSD": [
+            {"type": "ontime", "description": "（迅速站起来，避免眼神接触）时间到了，我先走了。", "probability": 0.5},
+            {"type": "early", "description": "（突然站起来，声音颤抖）对不起，我……我现在很难受，我必须走了。", "probability": 0.4},
+            {"type": "abrupt", "description": "（没有任何预警，突然站起来就走，没有说再见）", "probability": 0.1}
+        ],
+        "双相情感障碍": [
+            {"type": "ontime", "description": "（兴奋地）时间到了！好的，下周见老师！今天聊得挺好的！", "probability": 0.3},
+            {"type": "delay", "description": "（过度活跃）老师等等，我还有好多话没说完！再给我5分钟好不好？", "probability": 0.3},
+            {"type": "early", "description": "（突然变得低落）算了，没什么好说的，我走了。", "probability": 0.4}
+        ],
+        "强迫症": [
+            {"type": "delay", "description": "（反复检查自己的东西有没有落下）老师，我的水杯还在吗？我的包呢？请确认一下……", "probability": 0.6},
+            {"type": "ontime", "description": "（确认了几遍自己的东西）好的，时间到了，老师再见。", "probability": 0.4}
+        ]
+    }
+    
+    scenes = departure_scenes.get(disorder_type, departure_scenes["抑郁"])
+    
+    # 根据概率选择离开类型
+    rand = random.random()
+    cumulative = 0
+    selected_scene = scenes[0]
+    
+    for scene in scenes:
+        cumulative += scene["probability"]
+        if rand <= cumulative:
+            selected_scene = scene
+            break
+    
+    return selected_scene
+
 async def run_consultation_session(
+    user_id: str,
     user_message: str,
-    session_id: str | None = None,
-    patient_profile: str | None = None
+    session_id: int = None,
+    message_order: int = 0,
+    current_emotion: str = None,
+    disorder_type: str = None,
+    profile_data: dict = None
 ) -> dict:
     """
     运行咨询会话
     
     Args:
+        user_id: 咨询师ID
         user_message: 咨询师输入的消息
         session_id: 会话ID（首次会话为None）
-        patient_profile: 病人档案（首次会话可为None，随机生成）
+        message_order: 消息序号
+        current_emotion: 当前情绪状态
+        disorder_type: 症状类型
+        profile_data: 病人档案数据
     
     Returns:
         包含响应和会话信息的字典
@@ -194,71 +296,191 @@ async def run_consultation_session(
     with open(config_path, 'r', encoding='utf-8') as f:
         cfg = json.load(f)
     
-    api_key = os.getenv("COZE_WORKLOAD_IDENTITY_API_KEY")
-    base_url = os.getenv("COZE_INTEGRATION_MODEL_BASE_URL")
-    
     ctx = new_context(method="consultation")
+    client = LLMClient(ctx=ctx)
     
-    # 首次会话：创建会话并初始化病人档案
-    if session_id is None:
-        if patient_profile is None:
-            disorder, patient_profile = get_random_patient_profile()
-        
-        # 创建会话
-        client = LLMClient(ctx=ctx)
-        create_msg = HumanMessage(
-            content=f"""请创建一个新的对话会话。
-用户ID：user_{random.randint(1000, 9999)}
-病人档案：{patient_profile}
-请调用 create_dialogue_session 工具创建会话。"""
+    # 检查是否是开始新咨询或继续咨询
+    is_start_new = any(keyword in user_message for keyword in ["开始新的咨询", "新咨询", "新的咨询", "开始咨询", "创建新来访者"])
+    is_continue = any(keyword in user_message for keyword in ["继续咨询", "继续上次的咨询", "恢复咨询", "开始上次"])
+    is_end = any(keyword in user_message for keyword in ["结束咨询", "请督导", "分析", "反馈", "结束"])
+    
+    if is_start_new:
+        # 开始新咨询：创建新来访者
+        visitor_result = create_new_visitor(
+            user_id=user_id,
+            disorder_type=None,  # 随机选择
+            runtime=type('obj', (object,), {'context': ctx})()
         )
+        visitor_data = json.loads(visitor_result)
+        
+        visitor_id = visitor_data["visitor_id"]
+        disorder_type = visitor_data["disorder_type"]
+        profile_data = visitor_data
+        current_emotion = random.choice(profile_data["emotional_states"])
+        
+        # 创建新会话
+        session_result = create_consultation_session(
+            visitor_id=visitor_id,
+            session_number=1,
+            runtime=type('obj', (object,), {'context': ctx})()
+        )
+        session_data = json.loads(session_result)
+        session_id = session_data["session_id"]
+        message_order = 0
+        
+        # 生成首次问候
+        first_prompt = f"""你是一名{profile_data['disorder_type']}症状的病人，名叫{profile_data['name']}。
+
+你的档案：
+{profile_data['profile']}
+
+这是你的第一次心理咨询，你提前到了咨询室。请根据你的症状和性格特点，模拟你见到咨询师时的第一次问候。
+
+要求：
+1. 必须包含行为描写（在括号里）
+2. 体现你的症状特征
+3. 体现你的情绪状态（{current_emotion}）
+4. 可以表现出紧张、犹豫、讨好等特征
+5. 只说对话内容，不要解释"""
         
         response = client.invoke(
-            messages=[create_msg],
+            messages=[HumanMessage(content=first_prompt)],
             model=cfg['config'].get("model"),
-            temperature=0.3,
+            temperature=0.85,
             extra_body={"thinking": {"type": "disabled"}}
         )
         
-        # 从响应中提取 session_id（简化处理）
-        session_id = f"session_{random.randint(10000, 99999)}"
+        response_text = _get_text_content(response.content)
         
-        # 实际创建会话
-        create_dialogue_session(
-            user_id=f"user_{random.randint(1000, 9999)}",
-            patient_profile=patient_profile,
-            runtime=type('obj', (object,), {'context': ctx})()
-        )
-        
-        # 记录初始提示
-        add_dialogue_message(
+        # 记录对话
+        add_dialogue_message_db(
             session_id=session_id,
-            role="system",
-            content=f"系统：开始新的咨询会话，病人症状：{disorder}",
-            runtime=type('obj', (object,), {'context': ctx})()
-        )
-    
-    # 判断是否切换到督导模式
-    is_supervision = any(
-        keyword in user_message.lower()
-        for keyword in ["结束咨询", "请督导", "结束", "督导", "分析", "反馈"]
-    )
-    
-    if is_supervision:
-        # 督导模式 - 动力学取向个案督导
-        
-        # 获取对话历史
-        history_text = get_dialogue_history_text(
-            session_id=session_id,
+            role="patient",
+            content=response_text,
+            emotion_state=current_emotion,
+            message_order=message_order,
             runtime=type('obj', (object,), {'context': ctx})()
         )
         
-        # 从对话中提取关键主题
-        client = LLMClient(ctx=ctx)
-        extract_prompt = f"""请从以下咨询对话中提取关键主题和症状特征（不超过100字）：
+        return {
+            "phase": "patient",
+            "session_id": session_id,
+            "visitor_id": visitor_id,
+            "visitor_name": profile_data['name'],
+            "disorder_type": disorder_type,
+            "session_number": 1,
+            "response": response_text,
+            "emotion": current_emotion,
+            "message_order": message_order + 1,
+            "is_final": False
+        }
+    
+    elif is_continue:
+        # 继续之前的咨询
+        visitor_result = get_active_visitor(
+            user_id=user_id,
+            runtime=type('obj', (object,), {'context': ctx})()
+        )
+        visitor_data = json.loads(visitor_result)
+        
+        if "error" in visitor_data:
+            return {
+                "phase": "error",
+                "response": "没有找到活跃的来访者，请先创建新来访者（输入'开始新的咨询'）"
+            }
+        
+        visitor_id = visitor_data["visitor_id"]
+        disorder_type = visitor_data["disorder_type"]
+        session_number = visitor_data["total_sessions"] + 1
+        profile_data = CHINA_PATIENT_PROFILES[disorder_type]
+        current_emotion = random.choice(profile_data["emotional_states"])
+        
+        # 创建新会话
+        session_result = create_consultation_session(
+            visitor_id=visitor_id,
+            session_number=session_number,
+            runtime=type('obj', (object,), {'context': ctx})()
+        )
+        session_data = json.loads(session_result)
+        session_id = session_data["session_id"]
+        message_order = 0
+        
+        # 生成第二次咨询的问候
+        second_prompt = f"""你是一名{disorder_type}症状的病人，这是你的第{session_number}次心理咨询。
 
-{history_text}
-"""
+你的档案：
+{profile_data['profile']}
+
+距离上次咨询已经过了一周，你再次来到咨询室。请根据你的症状和性格特点，模拟你见到咨询师时的问候。
+
+要求：
+1. 必须包含行为描写（在括号里）
+2. 体现你的症状特征
+3. 可以表现出与上次不同的情绪或行为
+4. 可以提到过去一周的情况
+5. 不一定要记得上次聊了什么内容
+6. 只说对话内容，不要解释"""
+        
+        response = client.invoke(
+            messages=[HumanMessage(content=second_prompt)],
+            model=cfg['config'].get("model"),
+            temperature=0.85,
+            extra_body={"thinking": {"type": "disabled"}}
+        )
+        
+        response_text = _get_text_content(response.content)
+        
+        # 记录对话
+        add_dialogue_message_db(
+            session_id=session_id,
+            role="patient",
+            content=response_text,
+            emotion_state=current_emotion,
+            message_order=message_order,
+            runtime=type('obj', (object,), {'context': ctx})()
+        )
+        
+        return {
+            "phase": "patient",
+            "session_id": session_id,
+            "visitor_id": visitor_id,
+            "visitor_name": visitor_data["name"],
+            "disorder_type": disorder_type,
+            "session_number": session_number,
+            "response": response_text,
+            "emotion": current_emotion,
+            "message_order": message_order + 1,
+            "is_final": False
+        }
+    
+    elif is_end:
+        # 结束咨询，进入督导
+        
+        if not session_id:
+            return {
+                "phase": "error",
+                "response": "没有活跃的会话，无法结束咨询"
+            }
+        
+        # 模拟离开场景
+        departure_scene = _simulate_departure_scene(disorder_type, 0)
+        
+        # 结束会话
+        end_consultation_session(
+            session_id=session_id,
+            departure_type=departure_scene["type"],
+            summary=f"来访者{departure_scene['type']}离开",
+            runtime=type('obj', (object,), {'context': ctx})()
+        )
+        
+        # 获取对话历史进行督导分析
+        history_text = get_session_history(
+            session_id=session_id,
+            runtime=type('obj', (object,), {'context': ctx})()
+        )
+        
+        # 提取关键主题
+        extract_prompt = f"""请从以下咨询对话中提取关键主题和症状特征（不超过100字）：\n\n{history_text}"""
         
         extract_response = client.invoke(
             messages=[HumanMessage(content=extract_prompt)],
@@ -268,47 +490,6 @@ async def run_consultation_session(
         )
         
         key_topics = _get_text_content(extract_response.content)
-        
-        # 搜索相关学术文献
-        literature_results = []
-        
-        # 1. 搜索动力学理论文献
-        try:
-            psych_lit = search_academic_literature(
-                query=f"{key_topics[:50]} psychodynamic psychoanalytic",
-                search_focus="psychodynamic",
-                runtime=type('obj', (object,), {'context': ctx})()
-            )
-            literature_results.append(("动力学理论文献", psych_lit))
-        except:
-            pass
-        
-        # 2. 搜索客体关系理论
-        try:
-            obj_lit = search_classic_theories(
-                topic="object relations transference defense",
-                theorists="auto",
-                runtime=type('obj', (object,), {'context': ctx})()
-            )
-            literature_results.append(("客体关系经典理论", obj_lit))
-        except:
-            pass
-        
-        # 3. 搜索临床期刊文章
-        try:
-            journal_lit = search_journal_articles(
-                topic=key_topics[:30],
-                journal="any",
-                runtime=type('obj', (object,), {'context': ctx})()
-            )
-            literature_results.append(("临床期刊文章", journal_lit))
-        except:
-            pass
-        
-        # 构建文献背景
-        literature_background = "\n\n## 学术文献检索结果\n"
-        for category, result in literature_results:
-            literature_background += f"\n### {category}\n{result}\n"
         
         # 构建动力学督导提示
         supervision_prompt = f"""你现在是一名心理动力学和客体关系取向的资深督导专家。请基于动力学理论框架对以下咨询过程进行专业督导分析。
@@ -321,29 +502,29 @@ async def run_consultation_session(
 
 {key_topics}
 
-{literature_background}
+## 离开场景
+
+{departure_scene["description"]}
 
 ## 督导分析要求
 
 请严格按照以下动力学框架进行分析，所有理论观点必须标注文献来源：
 
 ### 一、个案动力学概念化
-1. **核心心理冲突**：分析来访者的潜意识冲突
-2. **主要防御机制**：识别并解释来访者使用的防御机制（引用 Freud、Klein 等经典理论）
-3. **客体关系模式**：分析来访者的内在客体关系（引用 Klein、Winnicott 等理论）
-4. **移情表现**：识别咨询过程中的移情现象（引用经典移情理论）
+1. **核心心理冲突**
+2. **主要防御机制**
+3. **客体关系模式**
+4. **移情表现**
 
 ### 二、咨询技术评估
-1. **动力学技术运用**：评估自由联想、解释、沉默等技术的运用
-2. **移情与反移情处理**：分析咨询师对移情的识别和反移情的觉察
-3. **解释时机和深度**：评估解释的时机选择和深度把握
-4. **边界维护**：评估治疗边界的设置
+1. **动力学技术运用**
+2. **移情与反移情处理**
+3. **解释时机和深度**
+4. **边界维护**
 
 ### 三、文献理论支撑
 针对每个分析点，必须引用：
-- [作者, 年份] "理论观点"，出处《著作名》或期刊文章标题
-- 仅引用已发表的学术论文或经典著作
-- 禁止引用网络文章或二次评论
+- [作者, 年份] "理论观点"，出处
 
 ### 四、优点与不足
 ### 五、动力学取向专业建议
@@ -363,83 +544,89 @@ async def run_consultation_session(
         
         response_text = _get_text_content(response.content)
         
-        # 结束会话
-        end_dialogue_session(
-            session_id=session_id,
-            summary="咨询会话结束，进入动力学取向督导阶段",
-            runtime=type('obj', (object,), {'context': ctx})()
-        )
-        
         return {
             "phase": "supervision",
             "session_id": session_id,
+            "departure_scene": departure_scene,
             "response": response_text,
-            "literature": literature_results,
             "is_final": True
         }
     
     else:
-        # 模拟病人模式
-        # 获取当前对话历史
-        try:
-            history_data = get_dialogue_session(
-                session_id=session_id,
-                runtime=type('obj', (object,), {'context': ctx})()
-            )
-        except:
-            history_data = ""
+        # 正常对话：咨询师与病人对话
+        if not session_id or not disorder_type or not profile_data:
+            return {
+                "phase": "error",
+                "response": "请先开始新咨询（输入'开始新的咨询'）或继续之前的咨询（输入'继续咨询'）"
+            }
+        
+        # 分析咨询师回应类型
+        counselor_response_type = _analyze_counselor_response_type(user_message)
         
         # 记录咨询师输入
-        add_dialogue_message(
+        add_dialogue_message_db(
             session_id=session_id,
             role="counselor",
             content=user_message,
+            counselor_response_type=counselor_response_type,
+            message_order=message_order,
+            runtime=type('obj', (object,), {'context': ctx})()
+        )
+        
+        # 计算情绪变化
+        new_emotion = _calculate_emotion_change(
+            current_emotion,
+            disorder_type,
+            counselor_response_type,
+            profile_data
+        )
+        
+        # 获取当前对话历史（简要）
+        history_text = get_session_history(
+            session_id=session_id,
             runtime=type('obj', (object,), {'context': ctx})()
         )
         
         # 构建模拟病人提示
-        patient_prompt = f"""你现在是一名心理病人（来访者）。根据以下信息模拟回应：
+        patient_prompt = f"""你是一名{disorder_type}症状的病人。
 
-病人档案：
-{patient_profile if patient_profile else "未知"}
+你的档案：
+{profile_data['profile']}
 
 当前对话历史：
-{history_data if history_data else "这是首次对话"}
+{history_text}
 
 咨询师刚刚说：{user_message}
 
-请根据你的症状和情绪状态做出回应。你的回应应该：
-1. 符合病人的症状特征
-2. 体现真实的情绪反应（如愤怒、沉默、抗拒、开心、焦虑等）
-3. 可以出现各种真实情况：情绪波动、沉默不语、言语攻击、考虑结束咨询等
-4. 回应要自然、真实，不要太刻意
-5. 如果咨询师的话让你感到不适，可以表现出防御或攻击
+咨询师回应类型：{counselor_response_type}
 
-请用病人的口吻回应，只说对话内容，不要解释你的情绪状态。"""
-        
-        client = LLMClient(ctx=ctx)
-        messages = [
-            HumanMessage(content=patient_prompt)
-        ]
+你的当前情绪状态：{current_emotion}，咨询师回应后你的新情绪状态：{new_emotion}
+
+请根据你的症状、情绪状态和咨询师回应做出回应。你的回应应该：
+1. 符合病人的症状特征和性格特点
+2. 体现真实的情绪反应（{new_emotion}）
+3. 可以表现出各种真实情况：情绪波动、沉默不语、言语攻击、考虑结束咨询等
+4. 回应要自然、真实
+5. 如果咨询师的话让你感到不适，可以表现出防御或攻击
+6. 必须包含行为描写（在括号里）
+7. 只说对话内容，不要解释你的情绪状态"""
         
         response = client.invoke(
-            messages=messages,
+            messages=[HumanMessage(content=patient_prompt)],
             model=cfg['config'].get("model"),
-            temperature=0.85,  # 较高的温度以增加情绪变化
+            temperature=0.85,
             extra_body={"thinking": {"type": "disabled"}}
         )
         
         response_text = _get_text_content(response.content)
         
-        # 随机生成情绪状态
-        emotion = random.choice(EMOTION_STATES)
-        
         # 记录病人回应
-        add_dialogue_message(
+        add_dialogue_message_db(
             session_id=session_id,
             role="patient",
             content=response_text,
-            emotion_state=emotion,
+            emotion_state=new_emotion,
+            message_order=message_order + 1,
             runtime=type('obj', (object,), {'context': ctx})()
         )
         
@@ -447,6 +634,8 @@ async def run_consultation_session(
             "phase": "patient",
             "session_id": session_id,
             "response": response_text,
-            "emotion": emotion,
+            "emotion": new_emotion,
+            "counselor_response_type": counselor_response_type,
+            "message_order": message_order + 2,
             "is_final": False
         }
