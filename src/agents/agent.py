@@ -22,6 +22,11 @@ from tools.dialogue_record import (
     get_dialogue_history_text,
     end_dialogue_session
 )
+from tools.academic_search import (
+    search_academic_literature,
+    search_classic_theories,
+    search_journal_articles
+)
 
 # 模型配置路径
 LLM_CONFIG = "config/agent_llm_config.json"
@@ -36,35 +41,59 @@ def _windowed_messages(old, new):
 class AgentState(MessagesState):
     messages: Annotated[list[AnyMessage], _windowed_messages]
 
-# 常见心理症状模板
+# 常见心理症状模板（动力学/客体关系取向）
 PATIENT_PROFILES = {
     "抑郁": """姓名：李明，年龄：32岁
-症状：重度抑郁，持续低落情绪
+动力学概念化：
+- 核心冲突：对丧失的内疚与愤怒的内化，形成严厉的超我
+- 防御机制：内摄、转向自身、情感隔离
+- 客体关系：内化的批评性客体占主导，缺乏好客体的内在表征
+- 发展创伤：早年情感需求未被满足，形成自卑与无价值感
+
+症状表现：重度抑郁，持续低落情绪，兴趣丧失
 背景：工作压力大，近期遭遇失业，感到人生无意义
 行为特征：说话缓慢，语气低沉，经常叹气，对事情缺乏兴趣
-心理防御机制：回避、否认
-咨询目标：帮助重新建立生活目标，缓解抑郁症状
+移情倾向：可能将咨询师理想化或贬低，期待被拯救或担心被拒绝
+咨询目标：重构内在客体关系，降低超我严厉程度
 """,
     "焦虑": """姓名：张华，年龄：28岁
-症状：广泛性焦虑症，持续担忧
+动力学概念化：
+- 核心冲突：对分离的恐惧与自主性的冲突
+- 防御机制：理智化、控制、行动化
+- 客体关系：焦虑型依恋模式，寻求确认但又不信任客体
+- 发展创伤：早年依恋关系不稳定，形成不安全依恋
+
+症状表现：广泛性焦虑症，持续担忧
 背景：对未来充满不确定性，担心工作和人际关系
 行为特征：语速快，坐立不安，反复询问相同问题
-心理防御机制：过度控制、强迫性思考
-咨询目标：帮助识别焦虑触发点，学习放松技巧
+移情倾向：可能表现出对咨询师的依赖和阻抗并存
+咨询目标：建立安全依恋，识别和修正内化客体关系模式
 """,
     "创伤": """姓名：王芳，年龄：35岁
-症状：创伤后应激障碍（PTSD）
-背景：半年前遭遇车祸，现在对驾驶有强烈恐惧
+动力学概念化：
+- 核心冲突：创伤性记忆的整合与解离
+- 防御机制：解离、情感麻木、闪回
+- 客体关系：创伤后内在客体的破碎，难以建立信任
+- 发展创伤：半年前遭遇车祸，触发早年被忽视的记忆
+
+症状表现：创伤后应激障碍（PTSD）
+背景：遭遇车祸，对驾驶有强烈恐惧
 行为特征：回避相关话题，情绪容易激动，可能出现闪回
-心理防御机制：解离、情感麻木
-咨询目标：处理创伤记忆，重建安全感
+移情倾向：可能将创伤的恐惧投射到咨询师身上，难以建立信任
+咨询目标：整合创伤记忆，重建安全依恋和内在客体
 """,
     "人格障碍": """姓名：赵强，年龄：40岁
-症状：边缘型人格障碍倾向
+动力学概念化：
+- 核心冲突：对分离的极端恐惧与融合的渴望
+- 防御机制：分裂、投射认同、贬低、理想化
+- 客体关系：全好/全坏的分裂客体关系，缺乏整合
+- 发展创伤：早年情感忽视或虐待，缺乏稳定的客体关系
+
+症状表现：边缘型人格障碍倾向
 背景：人际关系不稳定，情绪波动剧烈
 行为特征：情绪极端化，对咨询师有理想化或贬低倾向，可能表现出攻击性
-心理防御机制：分裂、投射认同
-咨询目标：建立稳定的咨询关系，学习情绪调节
+移情倾向：强烈的移情-反移情动态，可能测试咨询师的底线
+咨询目标：修通分裂机制，整合客体关系，建立稳定的治疗联盟
 """
 }
 
@@ -128,7 +157,10 @@ def build_agent(ctx=None):
             add_dialogue_message,
             get_dialogue_session,
             get_dialogue_history_text,
-            end_dialogue_session
+            end_dialogue_session,
+            search_academic_literature,
+            search_classic_theories,
+            search_journal_articles
         ],
         checkpointer=get_memory_saver(),
         state_schema=AgentState,
@@ -213,36 +245,119 @@ async def run_consultation_session(
     )
     
     if is_supervision:
-        # 督导模式
+        # 督导模式 - 动力学取向个案督导
+        
         # 获取对话历史
         history_text = get_dialogue_history_text(
             session_id=session_id,
             runtime=type('obj', (object,), {'context': ctx})()
         )
         
-        supervision_prompt = f"""你现在是个案督导专家。请分析以下咨询过程对话：
+        # 从对话中提取关键主题
+        client = LLMClient(ctx=ctx)
+        extract_prompt = f"""请从以下咨询对话中提取关键主题和症状特征（不超过100字）：
+
+{history_text}
+"""
+        
+        extract_response = client.invoke(
+            messages=[HumanMessage(content=extract_prompt)],
+            model=cfg['config'].get("model"),
+            temperature=0.3,
+            extra_body={"thinking": {"type": "disabled"}}
+        )
+        
+        key_topics = _get_text_content(extract_response.content)
+        
+        # 搜索相关学术文献
+        literature_results = []
+        
+        # 1. 搜索动力学理论文献
+        try:
+            psych_lit = search_academic_literature(
+                query=f"{key_topics[:50]} psychodynamic psychoanalytic",
+                search_focus="psychodynamic",
+                runtime=type('obj', (object,), {'context': ctx})()
+            )
+            literature_results.append(("动力学理论文献", psych_lit))
+        except:
+            pass
+        
+        # 2. 搜索客体关系理论
+        try:
+            obj_lit = search_classic_theories(
+                topic="object relations transference defense",
+                theorists="auto",
+                runtime=type('obj', (object,), {'context': ctx})()
+            )
+            literature_results.append(("客体关系经典理论", obj_lit))
+        except:
+            pass
+        
+        # 3. 搜索临床期刊文章
+        try:
+            journal_lit = search_journal_articles(
+                topic=key_topics[:30],
+                journal="any",
+                runtime=type('obj', (object,), {'context': ctx})()
+            )
+            literature_results.append(("临床期刊文章", journal_lit))
+        except:
+            pass
+        
+        # 构建文献背景
+        literature_background = "\n\n## 学术文献检索结果\n"
+        for category, result in literature_results:
+            literature_background += f"\n### {category}\n{result}\n"
+        
+        # 构建动力学督导提示
+        supervision_prompt = f"""你现在是一名心理动力学和客体关系取向的资深督导专家。请基于动力学理论框架对以下咨询过程进行专业督导分析。
+
+## 对话记录
 
 {history_text}
 
-请从以下角度进行分析：
-1. 咨询师使用的技巧和干预方式
-2. 咨询师回应的优点
-3. 咨询师回应的不足之处
-4. 咨询师可能忽略的视角
-5. 针对该症状的专业建议
-6. 咨询师需要反思和成长的地方
+## 关键主题识别
 
-请提供详细的督导报告。"""
+{key_topics}
+
+{literature_background}
+
+## 督导分析要求
+
+请严格按照以下动力学框架进行分析，所有理论观点必须标注文献来源：
+
+### 一、个案动力学概念化
+1. **核心心理冲突**：分析来访者的潜意识冲突
+2. **主要防御机制**：识别并解释来访者使用的防御机制（引用 Freud、Klein 等经典理论）
+3. **客体关系模式**：分析来访者的内在客体关系（引用 Klein、Winnicott 等理论）
+4. **移情表现**：识别咨询过程中的移情现象（引用经典移情理论）
+
+### 二、咨询技术评估
+1. **动力学技术运用**：评估自由联想、解释、沉默等技术的运用
+2. **移情与反移情处理**：分析咨询师对移情的识别和反移情的觉察
+3. **解释时机和深度**：评估解释的时机选择和深度把握
+4. **边界维护**：评估治疗边界的设置
+
+### 三、文献理论支撑
+针对每个分析点，必须引用：
+- [作者, 年份] "理论观点"，出处《著作名》或期刊文章标题
+- 仅引用已发表的学术论文或经典著作
+- 禁止引用网络文章或二次评论
+
+### 四、优点与不足
+### 五、动力学取向专业建议
+
+请提供完整的动力学督导报告。"""
         
-        client = LLMClient(ctx=ctx)
-        messages = [
-            HumanMessage(content=supervision_prompt)
-        ]
+        # 调用 LLM 生成督导报告
+        messages = [HumanMessage(content=supervision_prompt)]
         
         response = client.invoke(
             messages=messages,
             model=cfg['config'].get("model"),
             temperature=0.7,
+            max_completion_tokens=8192,
             extra_body={"thinking": {"type": "disabled"}}
         )
         
@@ -251,7 +366,7 @@ async def run_consultation_session(
         # 结束会话
         end_dialogue_session(
             session_id=session_id,
-            summary="咨询会话结束，进入督导阶段",
+            summary="咨询会话结束，进入动力学取向督导阶段",
             runtime=type('obj', (object,), {'context': ctx})()
         )
         
@@ -259,6 +374,7 @@ async def run_consultation_session(
             "phase": "supervision",
             "session_id": session_id,
             "response": response_text,
+            "literature": literature_results,
             "is_final": True
         }
     
