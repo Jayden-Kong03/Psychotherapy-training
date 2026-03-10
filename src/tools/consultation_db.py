@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, Dict, List
 from langchain.tools import tool
 from langchain.tools import ToolRuntime
-from utils.coze_compat import new_context
+from src.utils.coze_compat import new_context
 
 # 本地存储目录
 SESSIONS_DIR = "assets/sessions"

@@ -23,17 +23,17 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import MessagesState
 from langgraph.graph.message import add_messages
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage
-from utils.coze_compat import default_headers, new_context
-from storage.memory.memory_saver import get_memory_saver
+from src.utils.coze_compat import default_headers, new_context
+from src.storage.memory.memory_saver import get_memory_saver
 
 # 工具导入
-from tools.dialogue_record import get_dialogue_history_text
-from tools.academic_search import (
+from src.tools.dialogue_record import get_dialogue_history_text
+from src.tools.academic_search import (
     search_academic_literature,
     search_classic_theories,
     search_journal_articles
 )
-from tools.consultation_db import (
+from src.tools.consultation_db import (
     create_new_visitor,
     get_active_visitor,
     create_consultation_session,

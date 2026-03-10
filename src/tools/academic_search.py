@@ -6,7 +6,7 @@ import json
 from typing import Dict, List
 from langchain.tools import tool
 from langchain.tools import ToolRuntime
-from utils.coze_compat import new_context
+from src.utils.coze_compat import new_context
 
 # 经典心理学文献库（简化版，用于演示）
 CLASSIC_PSYCHOLOGY_PAPERS = [
