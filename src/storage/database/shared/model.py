@@ -1,9 +1,15 @@
-from coze_coding_dev_sdk.database import Base
-
+"""
+数据库模型（简化版）
+不再使用Coze SDK，保留模型定义供未来扩展
+"""
 from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, DateTime, PrimaryKeyConstraint, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from typing import Optional
 import datetime
+
+class Base(DeclarativeBase):
+    """SQLAlchemy基类"""
+    pass
 
 class HealthCheck(Base):
     __tablename__ = 'health_check'
