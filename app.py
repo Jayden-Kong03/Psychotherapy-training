@@ -2,6 +2,10 @@
 心理咨询模拟训练系统 - Web界面
 使用Streamlit构建可分享的Web应用
 """
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+
 import streamlit as st
 import asyncio
 import json
