@@ -23,7 +23,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import MessagesState
 from langgraph.graph.message import add_messages
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage
-from coze_coding_utils.runtime_ctx.context import default_headers, new_context
+from utils.coze_compat import default_headers, new_context
 from storage.memory.memory_saver import get_memory_saver
 
 # 工具导入
